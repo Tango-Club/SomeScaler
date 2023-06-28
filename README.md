@@ -173,11 +173,11 @@ ACR 产品页 ：https://www.aliyun.com/product/acr 。
 #### 生成镜像并推送至镜像仓库
 登录ACR镜像仓库
 ```
-docker login --username=xxx registry.cn-shanghai.aliyuncs.com
+docker login --username=pxl290 registry.cn-shanghai.aliyuncs.com
 ```
 构建镜像并推送至ACR镜像仓库
 ```
-docker buildx build --platform linux/amd64 -t $IMAGE_REPO:$IMAGE_TAG . --push
+docker buildx build --platform linux/amd64 -t registry.cn-shanghai.aliyuncs.com/somescaler/scaler:latest . --push
 ```
 *  IMAGE_REPO指定镜像repo
 *  IMAGE_TAG指定镜像tag
@@ -211,3 +211,7 @@ https://tianchi.aliyun.com/forum/post/558730
 
 # 注意
 项目中的run.sh将作为容器的脚本，选手提交时请不要修改run.sh的内容，否则可能会导致评测失败。
+
+git config --global http.proxy socks5://172.23.64.1:7890
+export http_proxy="socks5://172.23.64.1:7890"
+export https_proxy="socks5://172.23.64.1:7890"
