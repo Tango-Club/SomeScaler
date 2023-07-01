@@ -66,35 +66,20 @@ func New(metaData *model.Meta, config *config.Config) Scaler {
 	return scheduler
 }
 
-func (s *Simple) Assign(ctx context.Context, request *pb.AssignRequest) (*pb.AssignReply, error) {
-	start := time.Now()
-	instanceId := uuid.New().String()
-	defer func() {
-		if time.Since(start).Milliseconds() > 10 {
-			log.Printf("Assign, request id: %s, instance id: %s, cost %dms", request.RequestId, instanceId, time.Since(start).Milliseconds())
-		}
-	}()
-	//log.Printf("Assign, request id: %s", request.RequestId)
+func (s *Simple) TryGetIdleSlot() (*model.Instance, error) {
 	s.mu.Lock()
 	if element := s.idleInstance.Front(); element != nil {
 		instance := element.Value.(*model.Instance)
-		instance.Busy = true
 		s.idleInstance.Remove(element)
 		s.mu.Unlock()
+		return instance, nil
 		//log.Printf("Assign, request id: %s, instance %s reused", request.RequestId, instance.Id)
-		instanceId = instance.Id
-		return &pb.AssignReply{
-			Status: pb.Status_Ok,
-			Assigment: &pb.Assignment{
-				RequestId:  request.RequestId,
-				MetaKey:    instance.Meta.Key,
-				InstanceId: instance.Id,
-			},
-			ErrorMessage: nil,
-		}, nil
 	}
 	s.mu.Unlock()
+	return nil, nil
+}
 
+func (s *Simple) ConstructSlot(ctx context.Context, request *pb.AssignRequest) (*model.Instance, error) {
 	//Create new Instance
 	resourceConfig := model.SlotResourceConfig{
 		ResourceConfig: pb.ResourceConfig{
@@ -115,11 +100,33 @@ func (s *Simple) Assign(ctx context.Context, request *pb.AssignRequest) (*pb.Ass
 			TimeoutInSecs: request.MetaData.TimeoutInSecs,
 		},
 	}
+	instanceId := uuid.New().String()
 	instance, err := s.platformClient.Init(ctx, request.RequestId, instanceId, slot, meta)
 	if err != nil {
 		errorMessage := fmt.Sprintf("create instance failed with: %s", err.Error())
-		//log.Printf(errorMessage)
 		return nil, status.Errorf(codes.Internal, errorMessage)
+	}
+	return instance, nil
+}
+
+func (s *Simple) Assign(ctx context.Context, request *pb.AssignRequest) (*pb.AssignReply, error) {
+	start := time.Now()
+	defer func() {
+		if time.Since(start).Milliseconds() > 10 {
+			log.Printf("Assign, request id: %s, cost %dms", request.RequestId, time.Since(start).Milliseconds())
+		}
+	}()
+	instance, err := s.TryGetIdleSlot()
+	if err != nil {
+		errorMessage := fmt.Sprintf("create instance failed with: %s", err.Error())
+		return nil, status.Errorf(codes.Internal, errorMessage)
+	}
+	if instance == nil {
+		instance, err = s.ConstructSlot(ctx, request)
+		if err != nil {
+			errorMessage := fmt.Sprintf("create instance failed with: %s", err.Error())
+			return nil, status.Errorf(codes.Internal, errorMessage)
+		}
 	}
 
 	//add new instance
@@ -127,7 +134,6 @@ func (s *Simple) Assign(ctx context.Context, request *pb.AssignRequest) (*pb.Ass
 	instance.Busy = true
 	s.instances[instance.Id] = instance
 	s.mu.Unlock()
-	//log.Printf("request id: %s, instance %s for app %s is created, init latency: %dms", request.RequestId, instance.Id, instance.Meta.Key, instance.InitDurationInMs)
 
 	return &pb.AssignReply{
 		Status: pb.Status_Ok,
