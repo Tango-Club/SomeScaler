@@ -55,12 +55,10 @@ func New(metaData *model.Meta, config *config.Config) Scaler {
 		instances:      make(map[string]*model.Instance),
 		idleInstance:   list.New(),
 	}
-	//log.Printf("New scaler for app: %s is created", metaData.Key)
 	scheduler.wg.Add(1)
 	go func() {
 		defer scheduler.wg.Done()
 		scheduler.gcLoop()
-		//log.Printf("gc loop for app: %s is stoped", metaData.Key)
 	}()
 
 	return scheduler
@@ -87,7 +85,6 @@ func (s *Simple) ConstructSlot(ctx context.Context, request *pb.AssignRequest) (
 	slot, err := s.platformClient.CreateSlot(ctx, request.RequestId, &resourceConfig)
 	if err != nil {
 		errorMessage := fmt.Sprintf("create slot failed with: %s", err.Error())
-		//log.Printf(errorMessage)
 		return nil, status.Errorf(codes.Internal, errorMessage)
 	}
 
@@ -114,7 +111,7 @@ func (s *Simple) ConstructAndPushSlotToQueue(ctx context.Context, request *pb.As
 		s.idleInstance.PushFront(instance)
 		s.mu.Unlock()
 	} else {
-		log.Printf("ConstructAndPushSlotToQueue failed, request id: %s, err: %s", request.RequestId, err.Error())
+		// log.Printf("ConstructAndPushSlotToQueue failed, request id: %s, err: %s", request.RequestId, err.Error())
 	}
 }
 
@@ -138,10 +135,6 @@ func (s *Simple) Assign(ctx context.Context, request *pb.AssignRequest) (*pb.Ass
 				break
 			}
 
-			waitTimeMs = waitTimeMs * 2
-			if waitTimeMs > time.Second {
-				waitTimeMs = time.Second
-			}
 			time.Sleep(waitTimeMs)
 		}
 	}
@@ -172,10 +165,7 @@ func (s *Simple) Idle(ctx context.Context, request *pb.IdleRequest) (*pb.IdleRep
 		ErrorMessage: nil,
 	}
 	instanceId := request.Assigment.InstanceId
-	defer func() {
-		//log.Printf("Idle, request id: %s, instance: %s, cost %dus", request.Assigment.RequestId, instanceId, time.Since(start).Microseconds())
-	}()
-	//log.Printf("Idle, request id: %s", request.Assigment.RequestId)
+
 	needDestroy := false
 	slotId := ""
 	if request.Result != nil && request.Result.NeedDestroy != nil && *request.Result.NeedDestroy {
@@ -186,19 +176,17 @@ func (s *Simple) Idle(ctx context.Context, request *pb.IdleRequest) (*pb.IdleRep
 			s.deleteSlot(ctx, request.Assigment.RequestId, slotId, instanceId, request.Assigment.MetaKey, "bad instance")
 		}
 	}()
-	//log.Printf("Idle, request id: %s", request.Assigment.RequestId)
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if instance := s.instances[instanceId]; instance != nil {
 		slotId = instance.Slot.Id
 		instance.LastIdleTime = time.Now()
 		if needDestroy {
-			//log.Printf("request id %s, instance %s need be destroy", request.Assigment.RequestId, instanceId)
 			return reply, nil
 		}
 
 		if instance.Busy == false {
-			//log.Printf("request id %s, instance %s already freed", request.Assigment.RequestId, instanceId)
 			return reply, nil
 		}
 		instance.Busy = false
@@ -213,14 +201,11 @@ func (s *Simple) Idle(ctx context.Context, request *pb.IdleRequest) (*pb.IdleRep
 }
 
 func (s *Simple) deleteSlot(ctx context.Context, requestId, slotId, instanceId, metaKey, reason string) {
-	//log.Printf("start delete Instance %s (Slot: %s) of app: %s", instanceId, slotId, metaKey)
 	if err := s.platformClient.DestroySLot(ctx, requestId, slotId, reason); err != nil {
-		//log.Printf("delete Instance %s (Slot: %s) of app: %s failed with: %s", instanceId, slotId, metaKey, err.Error())
 	}
 }
 
 func (s *Simple) gcLoop() {
-	//log.Printf("gc loop for app: %s is started", s.metaData.Key)
 	ticker := time.NewTicker(s.config.GcInterval)
 	for range ticker.C {
 		for {
