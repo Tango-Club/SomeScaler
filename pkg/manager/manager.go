@@ -15,7 +15,6 @@ package manager
 
 import (
 	"fmt"
-	"log"
 	"sync"
 
 	"github.com/AliyunContainerService/scaler/pkg/config"
@@ -50,7 +49,7 @@ func (m *Manager) GetOrCreate(metaData *model.Meta) scaler.Scaler {
 		m.rw.Unlock()
 		return scheduler
 	}
-	log.Printf("Create new scaler for app %s", metaData.Key)
+	// log.Printf("Create new scaler for app %s", metaData.Key)
 	scheduler := scaler.New(metaData, m.config)
 	m.schedulers[metaData.Key] = scheduler
 	m.rw.Unlock()

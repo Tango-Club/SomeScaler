@@ -68,14 +68,12 @@ func New(metaData *model.Meta, config *config.Config) Scaler {
 
 func (s *Simple) TryGetIdleSlot() (*model.Instance, error) {
 	s.mu.Lock()
+	defer s.mu.Unlock()
 	if element := s.idleInstance.Front(); element != nil {
 		instance := element.Value.(*model.Instance)
 		s.idleInstance.Remove(element)
-		s.mu.Unlock()
 		return instance, nil
-		//log.Printf("Assign, request id: %s, instance %s reused", request.RequestId, instance.Id)
 	}
-	s.mu.Unlock()
 	return nil, nil
 }
 
@@ -109,23 +107,42 @@ func (s *Simple) ConstructSlot(ctx context.Context, request *pb.AssignRequest) (
 	return instance, nil
 }
 
+func (s *Simple) ConstructAndPushSlotToQueue(ctx context.Context, request *pb.AssignRequest) {
+	instance, err := s.ConstructSlot(ctx, request)
+	if err == nil {
+		s.mu.Lock()
+		s.idleInstance.PushFront(instance)
+		s.mu.Unlock()
+	} else {
+		log.Printf("ConstructAndPushSlotToQueue failed, request id: %s, err: %s", request.RequestId, err.Error())
+	}
+}
+
 func (s *Simple) Assign(ctx context.Context, request *pb.AssignRequest) (*pb.AssignReply, error) {
-	start := time.Now()
-	defer func() {
-		if time.Since(start).Milliseconds() > 10 {
-			log.Printf("Assign, request id: %s, cost %dms", request.RequestId, time.Since(start).Milliseconds())
-		}
-	}()
 	instance, err := s.TryGetIdleSlot()
 	if err != nil {
-		errorMessage := fmt.Sprintf("create instance failed with: %s", err.Error())
+		errorMessage := fmt.Sprintf("TryGetIdleSlot instance failed with: %s", err.Error())
 		return nil, status.Errorf(codes.Internal, errorMessage)
 	}
 	if instance == nil {
-		instance, err = s.ConstructSlot(ctx, request)
-		if err != nil {
-			errorMessage := fmt.Sprintf("create instance failed with: %s", err.Error())
-			return nil, status.Errorf(codes.Internal, errorMessage)
+		go s.ConstructAndPushSlotToQueue(ctx, request)
+
+		waitTimeMs := s.config.WaitTimeInitial
+		for {
+			instance, err = s.TryGetIdleSlot()
+			if err != nil {
+				errorMessage := fmt.Sprintf("TryGetIdleSlot instance failed with: %s", err.Error())
+				return nil, status.Errorf(codes.Internal, errorMessage)
+			}
+			if instance != nil {
+				break
+			}
+
+			waitTimeMs = waitTimeMs * 2
+			if waitTimeMs > time.Second {
+				waitTimeMs = time.Second
+			}
+			time.Sleep(waitTimeMs)
 		}
 	}
 
