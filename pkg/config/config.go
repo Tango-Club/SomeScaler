@@ -26,5 +26,5 @@ var DefaultConfig = Config{
 	ClientAddr:           "127.0.0.1:50051",
 	GcInterval:           10 * time.Second,
 	IdleDurationBeforeGC: 200 * time.Second,
-	WaitTimeInitial:      1000 * time.Millisecond,
+	WaitTimeInitial:      10 * time.Millisecond,
 }
