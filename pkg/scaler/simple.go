@@ -36,6 +36,7 @@ type Simple struct {
 	metaData       *model.Meta
 	platformClient platform_client.Client
 	mu             sync.Mutex
+	muExpand       sync.Mutex
 	wg             sync.WaitGroup
 	instances      map[string]*model.Instance
 	idleInstance   *list.List
@@ -56,8 +57,6 @@ func New(metaData *model.Meta, config *config.Config) Scaler {
 		wg:             sync.WaitGroup{},
 		instances:      make(map[string]*model.Instance),
 		idleInstance:   list.New(),
-		currentReq:     0,
-		currentSlot:    0,
 	}
 	scheduler.wg.Add(1)
 	go func() {
@@ -109,8 +108,6 @@ func (s *Simple) ConstructSlot(ctx context.Context, request *pb.AssignRequest) (
 }
 
 func (s *Simple) ConstructAndPushSlotToQueue(ctx context.Context, request *pb.AssignRequest) {
-	s.UpdateCurrentSlot(1, true)
-
 	instance, err := s.ConstructSlot(ctx, request)
 	if err == nil {
 		s.mu.Lock()
@@ -121,24 +118,52 @@ func (s *Simple) ConstructAndPushSlotToQueue(ctx context.Context, request *pb.As
 	}
 }
 
-func (s *Simple) UpdateCurrentSlot(delta int, lock bool) {
-	if lock {
-		s.mu.Lock()
+func Pow2Roundup(x int) int {
+	if x <= 1 {
+		return 1
 	}
-	s.currentSlot += delta
-	if lock {
-		s.mu.Unlock()
-	}
+	x--
+	x |= x >> 1
+	x |= x >> 2
+	x |= x >> 4
+	x |= x >> 8
+	x |= x >> 16
+	return x + 1
 }
 
-func (s *Simple) UpdateCurrentReq(delta int, lock bool) {
-	if lock {
-		s.mu.Lock()
+func (s *Simple) ExpandSlots(ctx context.Context, request *pb.AssignRequest) {
+	needNewSlot := 0
+
+	s.mu.Lock()
+	if s.idleInstance.Len() == 0 {
+		needNewSlot = len(s.instances)
+		if needNewSlot == 0 {
+			needNewSlot = 1
+		}
 	}
-	s.currentReq += delta
-	if lock {
-		s.mu.Unlock()
+	s.mu.Unlock()
+	if needNewSlot == 0 {
+		return
 	}
+
+	s.muExpand.Lock()
+	defer s.muExpand.Unlock()
+
+	if s.idleInstance.Len() != 0 {
+		return
+	}
+
+	log.Printf("expand slot, request id: %s, new slot: %d", request.MetaData.GetKey(), needNewSlot)
+
+	wg := sync.WaitGroup{}
+	wg.Add(needNewSlot)
+	for i := 0; i < needNewSlot; i++ {
+		go func() {
+			s.ConstructAndPushSlotToQueue(ctx, request)
+			wg.Done()
+		}()
+	}
+	wg.Wait()
 }
 
 func (s *Simple) Assign(ctx context.Context, request *pb.AssignRequest) (*pb.AssignReply, error) {
@@ -148,15 +173,12 @@ func (s *Simple) Assign(ctx context.Context, request *pb.AssignRequest) (*pb.Ass
 		return nil, status.Errorf(codes.Internal, errorMessage)
 	}
 
-	s.UpdateCurrentReq(1, true)
-	defer s.UpdateCurrentReq(-1, true)
-
 	if instance == nil {
 		constructDone := false
 		mtx := new(sync.Mutex)
 
 		go func() {
-			s.ConstructAndPushSlotToQueue(ctx, request)
+			s.ExpandSlots(ctx, request)
 			mtx.Lock()
 			constructDone = true
 			mtx.Unlock()
@@ -176,6 +198,10 @@ func (s *Simple) Assign(ctx context.Context, request *pb.AssignRequest) (*pb.Ass
 			mtx.Lock()
 			if constructDone {
 				mtx.Unlock()
+				instance, err = s.TryGetIdleSlot()
+				if instance != nil {
+					break
+				}
 				errorMessage := fmt.Sprintf("ConstructAndPushSlotToQueue failed, request id: %s", request.RequestId)
 				return nil, status.Errorf(codes.Internal, errorMessage)
 			}
@@ -240,6 +266,7 @@ func (s *Simple) Idle(ctx context.Context, request *pb.IdleRequest) (*pb.IdleRep
 	} else {
 		return nil, status.Errorf(codes.NotFound, fmt.Sprintf("request id %s, instance %s not found", request.Assigment.RequestId, instanceId))
 	}
+
 	return &pb.IdleReply{
 		Status:       pb.Status_Ok,
 		ErrorMessage: nil,
@@ -260,7 +287,6 @@ func (s *Simple) gcLoop() {
 				instance := element.Value.(*model.Instance)
 				idleDuration := time.Now().Sub(instance.LastIdleTime)
 				if idleDuration > s.config.IdleDurationBeforeGC {
-					s.UpdateCurrentSlot(-1, false)
 					s.idleInstance.Remove(element)
 					delete(s.instances, instance.Id)
 					s.mu.Unlock()
