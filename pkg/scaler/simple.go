@@ -29,6 +29,8 @@ import (
 	"github.com/AliyunContainerService/scaler/pkg/platform_client"
 	pb "github.com/AliyunContainerService/scaler/proto"
 	"github.com/google/uuid"
+
+	"github.com/wangjia184/sortedset"
 )
 
 type Simple struct {
@@ -40,8 +42,9 @@ type Simple struct {
 	wg             sync.WaitGroup
 	instances      map[string]*model.Instance
 	idleInstance   *list.List
-	currentReq     int
-	currentSlot    int
+	lastAssignTime time.Time
+	deltaTimes     sortedset.SortedSet
+	durationTimes  sortedset.SortedSet
 }
 
 func New(metaData *model.Meta, config *config.Config) Scaler {
@@ -57,6 +60,9 @@ func New(metaData *model.Meta, config *config.Config) Scaler {
 		wg:             sync.WaitGroup{},
 		instances:      make(map[string]*model.Instance),
 		idleInstance:   list.New(),
+		lastAssignTime: time.Now(),
+		deltaTimes:     *sortedset.New(),
+		durationTimes:  *sortedset.New(),
 	}
 	scheduler.wg.Add(1)
 	go func() {
@@ -76,6 +82,24 @@ func (s *Simple) TryGetIdleSlot() (*model.Instance, error) {
 		return instance, nil
 	}
 	return nil, nil
+}
+
+func (s *Simple) expectSize() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.durationTimes.GetCount() == 0 || s.deltaTimes.GetCount() == 0 {
+		return 1
+	}
+	Q := s.durationTimes.GetByRank(s.durationTimes.GetCount()/2, false).Score()
+	D := s.deltaTimes.GetByRank(s.deltaTimes.GetCount()/2, false).Score()
+	if D == 0 {
+		return 1
+	}
+	result := Q/D + 1
+	if result > 50 {
+		result = 50
+	}
+	return int(result)
 }
 
 func (s *Simple) ConstructSlot(ctx context.Context, request *pb.AssignRequest) (*model.Instance, error) {
@@ -132,28 +156,15 @@ func Pow2Roundup(x int) int {
 }
 
 func (s *Simple) ExpandSlots(ctx context.Context, request *pb.AssignRequest) {
-	needNewSlot := 0
-
-	s.mu.Lock()
-	if s.idleInstance.Len() == 0 {
-		needNewSlot = len(s.instances)
-		if needNewSlot == 0 {
-			needNewSlot = 1
-		}
-	}
-	s.mu.Unlock()
-	if needNewSlot == 0 {
-		return
-	}
-
 	s.muExpand.Lock()
 	defer s.muExpand.Unlock()
 
-	if s.idleInstance.Len() != 0 {
+	needNewSlot := s.expectSize() - len(s.instances)
+	if needNewSlot <= 0 {
 		return
 	}
 
-	log.Printf("expand slot, request id: %s, new slot: %d", request.MetaData.GetKey(), needNewSlot)
+	log.Printf("expand slot, request id: %s, new slot: %d, now slot: %d", request.MetaData.GetKey(), needNewSlot, len(s.instances))
 
 	wg := sync.WaitGroup{}
 	wg.Add(needNewSlot)
@@ -167,48 +178,40 @@ func (s *Simple) ExpandSlots(ctx context.Context, request *pb.AssignRequest) {
 }
 
 func (s *Simple) Assign(ctx context.Context, request *pb.AssignRequest) (*pb.AssignReply, error) {
-	instance, err := s.TryGetIdleSlot()
-	if err != nil {
-		errorMessage := fmt.Sprintf("TryGetIdleSlot instance failed with: %s", err.Error())
-		return nil, status.Errorf(codes.Internal, errorMessage)
-	}
+	s.mu.Lock()
+	s.deltaTimes.AddOrUpdate(request.RequestId, sortedset.SCORE(time.Now().UnixMilli()-s.lastAssignTime.UnixMilli()), "")
+	s.lastAssignTime = time.Now()
+	s.mu.Unlock()
 
-	if instance == nil {
-		constructDone := false
-		mtx := new(sync.Mutex)
+	constructDone := false
 
-		go func() {
-			s.ExpandSlots(ctx, request)
-			mtx.Lock()
-			constructDone = true
-			mtx.Unlock()
-		}()
+	go func() {
+		s.ExpandSlots(ctx, request)
+		constructDone = true
+	}()
 
-		waitTimeMs := s.config.WaitTimeInitial
-		for {
+	var instance *model.Instance
+	var err error
+	for {
+		instance, err = s.TryGetIdleSlot()
+		if err != nil {
+			errorMessage := fmt.Sprintf("TryGetIdleSlot instance failed with: %s", err.Error())
+			return nil, status.Errorf(codes.Internal, errorMessage)
+		}
+		if instance != nil {
+			break
+		}
+
+		if constructDone {
 			instance, err = s.TryGetIdleSlot()
-			if err != nil {
-				errorMessage := fmt.Sprintf("TryGetIdleSlot instance failed with: %s", err.Error())
-				return nil, status.Errorf(codes.Internal, errorMessage)
-			}
 			if instance != nil {
 				break
 			}
-
-			mtx.Lock()
-			if constructDone {
-				mtx.Unlock()
-				instance, err = s.TryGetIdleSlot()
-				if instance != nil {
-					break
-				}
-				errorMessage := fmt.Sprintf("ConstructAndPushSlotToQueue failed, request id: %s", request.RequestId)
-				return nil, status.Errorf(codes.Internal, errorMessage)
-			}
-			mtx.Unlock()
-
-			time.Sleep(waitTimeMs)
+			errorMessage := fmt.Sprintf("ConstructAndPushSlotToQueue failed, request id: %s", request.RequestId)
+			return nil, status.Errorf(codes.Internal, errorMessage)
 		}
+
+		time.Sleep(s.config.WaitTimeInitial)
 	}
 
 	//add new instance
@@ -232,6 +235,11 @@ func (s *Simple) Idle(ctx context.Context, request *pb.IdleRequest) (*pb.IdleRep
 	if request.Assigment == nil {
 		return nil, status.Errorf(codes.InvalidArgument, fmt.Sprintf("assignment is nil"))
 	}
+
+	s.mu.Lock()
+	s.durationTimes.AddOrUpdate(request.Assigment.RequestId, sortedset.SCORE(request.Result.DurationInMs), "")
+	s.mu.Unlock()
+
 	reply := &pb.IdleReply{
 		Status:       pb.Status_Ok,
 		ErrorMessage: nil,
@@ -282,11 +290,16 @@ func (s *Simple) gcLoop() {
 	ticker := time.NewTicker(s.config.GcInterval)
 	for range ticker.C {
 		for {
+			if s.expectSize() <= len(s.instances) || s.durationTimes.GetCount() == 0 {
+				continue
+			}
 			s.mu.Lock()
 			if element := s.idleInstance.Back(); element != nil {
 				instance := element.Value.(*model.Instance)
 				idleDuration := time.Now().Sub(instance.LastIdleTime)
-				if idleDuration > s.config.IdleDurationBeforeGC {
+				//D := s.deltaTimes.GetByRank(s.deltaTimes.GetCount()/2, false).Score()
+				Q := s.durationTimes.GetByRank(s.durationTimes.GetCount()/2, false).Score()
+				if sortedset.SCORE(idleDuration.Milliseconds()) > 2*Q {
 					s.idleInstance.Remove(element)
 					delete(s.instances, instance.Id)
 					s.mu.Unlock()

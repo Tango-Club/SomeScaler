@@ -9,6 +9,9 @@ github.com/golang/protobuf/ptypes/timestamp
 # github.com/google/uuid v1.3.0
 ## explicit
 github.com/google/uuid
+# github.com/wangjia184/sortedset v0.0.0-20220209072355-af6d6d227aa7
+## explicit; go 1.17
+github.com/wangjia184/sortedset
 # golang.org/x/net v0.8.0
 ## explicit; go 1.17
 golang.org/x/net/http/httpguts
