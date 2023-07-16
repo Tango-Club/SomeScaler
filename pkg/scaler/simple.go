@@ -45,6 +45,8 @@ type Simple struct {
 	lastAssignTime time.Time
 	deltaTimes     sortedset.SortedSet
 	durationTimes  sortedset.SortedSet
+	skipDelta      bool
+	working        int
 }
 
 func New(metaData *model.Meta, config *config.Config) Scaler {
@@ -63,6 +65,8 @@ func New(metaData *model.Meta, config *config.Config) Scaler {
 		lastAssignTime: time.Now(),
 		deltaTimes:     *sortedset.New(),
 		durationTimes:  *sortedset.New(),
+		skipDelta:      true,
+		working:        0,
 	}
 	scheduler.wg.Add(1)
 	go func() {
@@ -179,7 +183,12 @@ func (s *Simple) ExpandSlots(ctx context.Context, request *pb.AssignRequest) {
 
 func (s *Simple) Assign(ctx context.Context, request *pb.AssignRequest) (*pb.AssignReply, error) {
 	s.mu.Lock()
-	s.deltaTimes.AddOrUpdate(request.RequestId, sortedset.SCORE(time.Now().UnixMilli()-s.lastAssignTime.UnixMilli()), "")
+	s.working += 1
+	if s.skipDelta {
+		s.skipDelta = false
+	} else {
+		s.deltaTimes.AddOrUpdate(request.RequestId, sortedset.SCORE(time.Now().UnixMilli()-s.lastAssignTime.UnixMilli()), "")
+	}
 	s.lastAssignTime = time.Now()
 	s.mu.Unlock()
 
@@ -196,6 +205,7 @@ func (s *Simple) Assign(ctx context.Context, request *pb.AssignRequest) (*pb.Ass
 		instance, err = s.TryGetIdleSlot()
 		if err != nil {
 			errorMessage := fmt.Sprintf("TryGetIdleSlot instance failed with: %s", err.Error())
+			s.working -= 1
 			return nil, status.Errorf(codes.Internal, errorMessage)
 		}
 		if instance != nil {
@@ -208,6 +218,7 @@ func (s *Simple) Assign(ctx context.Context, request *pb.AssignRequest) (*pb.Ass
 				break
 			}
 			errorMessage := fmt.Sprintf("ConstructAndPushSlotToQueue failed, request id: %s", request.RequestId)
+			s.working -= 1
 			return nil, status.Errorf(codes.Internal, errorMessage)
 		}
 
@@ -251,14 +262,16 @@ func (s *Simple) Idle(ctx context.Context, request *pb.IdleRequest) (*pb.IdleRep
 	if request.Result != nil && request.Result.NeedDestroy != nil && *request.Result.NeedDestroy {
 		needDestroy = true
 	}
+
+	s.mu.Lock()
 	defer func() {
+		s.working -= 1
 		if needDestroy {
 			s.deleteSlot(ctx, request.Assigment.RequestId, slotId, instanceId, request.Assigment.MetaKey, "bad instance")
 		}
+		s.mu.Unlock()
 	}()
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
 	if instance := s.instances[instanceId]; instance != nil {
 		slotId = instance.Slot.Id
 		instance.LastIdleTime = time.Now()
@@ -290,16 +303,14 @@ func (s *Simple) gcLoop() {
 	ticker := time.NewTicker(s.config.GcInterval)
 	for range ticker.C {
 		for {
-			if s.expectSize() <= len(s.instances) || s.durationTimes.GetCount() == 0 {
+			if s.working != 0 {
 				continue
 			}
 			s.mu.Lock()
 			if element := s.idleInstance.Back(); element != nil {
 				instance := element.Value.(*model.Instance)
 				idleDuration := time.Now().Sub(instance.LastIdleTime)
-				//D := s.deltaTimes.GetByRank(s.deltaTimes.GetCount()/2, false).Score()
-				Q := s.durationTimes.GetByRank(s.durationTimes.GetCount()/2, false).Score()
-				if sortedset.SCORE(idleDuration.Milliseconds()) > 2*Q {
+				if idleDuration > s.config.IdleDurationBeforeGC {
 					s.idleInstance.Remove(element)
 					delete(s.instances, instance.Id)
 					s.mu.Unlock()

@@ -27,3 +27,4 @@ docker buildx build --platform linux/amd64 -t registry.cn-shanghai.aliyuncs.com/
 也就是Q/D+1
 4. 根据D和Q计算idle时间。
 暂时固定
+5. 如果全部idle，全部释放，并把间隔时间排除
