@@ -305,13 +305,13 @@ func (s *Simple) gcLoop() {
 				break
 			}
 			s.mu.Lock()
-			defer s.mu.Unlock()
 			if element := s.idleInstance.Back(); element != nil {
 				instance := element.Value.(*model.Instance)
 				idleDuration := time.Now().Sub(instance.LastIdleTime)
 				if idleDuration > s.config.IdleDurationBeforeGC {
 					s.idleInstance.Remove(element)
 					delete(s.instances, instance.Id)
+					s.mu.Unlock()
 
 					go func() {
 						reason := fmt.Sprintf("Idle duration: %fs, excceed configured duration: %fs", idleDuration.Seconds(), s.config.IdleDurationBeforeGC.Seconds())
@@ -324,6 +324,7 @@ func (s *Simple) gcLoop() {
 					continue
 				}
 			}
+			s.mu.Unlock()
 			break
 		}
 	}
