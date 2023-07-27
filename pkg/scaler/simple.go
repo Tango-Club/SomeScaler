@@ -18,6 +18,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"math"
 	"sync"
 	"time"
 
@@ -92,16 +93,19 @@ func (s *Simple) expectSize() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.durationTimes.GetCount() == 0 || s.deltaTimes.GetCount() == 0 {
-		return 1
+		return 2
 	}
 	Q := s.durationTimes.GetByRank(s.durationTimes.GetCount()/2, false).Score()
 	D := s.deltaTimes.GetByRank(s.deltaTimes.GetCount()/2, false).Score()
 	if D == 0 {
-		return 1
+		return 2
 	}
 	result := Q/D + 1
 	if result > 10 {
-		result = 10
+		result = 20
+	}
+	if result < 4 {
+		result = 2
 	}
 	return int(result)
 }
@@ -189,11 +193,11 @@ func (s *Simple) Assign(ctx context.Context, request *pb.AssignRequest) (*pb.Ass
 	s.lastAssignTime = time.Now()
 	s.mu.Unlock()
 
-	constructDone := false
-
 	instance, err := s.TryGetIdleSlot()
 
 	if instance == nil {
+		constructDone := false
+
 		go func() {
 			s.ExpandSlots(ctx, request)
 			constructDone = true
@@ -301,14 +305,12 @@ func (s *Simple) gcLoop() {
 	ticker := time.NewTicker(s.config.GcInterval)
 	for range ticker.C {
 		for {
-			if s.working != 0 {
-				break
-			}
+			D := s.expectSize()
 			s.mu.Lock()
 			if element := s.idleInstance.Back(); element != nil {
 				instance := element.Value.(*model.Instance)
 				idleDuration := time.Now().Sub(instance.LastIdleTime)
-				if idleDuration > s.config.IdleDurationBeforeGC {
+				if idleDuration.Milliseconds() > int64(D)*int64(math.Log2(float64(instance.InitDurationInMs))+10)*s.config.IdleDurationBeforeGC.Milliseconds() {
 					s.idleInstance.Remove(element)
 					delete(s.instances, instance.Id)
 					s.mu.Unlock()
