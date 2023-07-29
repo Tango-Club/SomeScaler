@@ -166,7 +166,7 @@ func Pow2Roundup(x int) int {
 func (s *Simple) ExpandSlots(ctx context.Context, request *pb.AssignRequest) {
 	needNewSlot := s.expectSize() - len(s.instances)
 	if needNewSlot <= 0 {
-		needNewSlot = 1
+		needNewSlot = 2
 	}
 
 	log.Printf("expand slot, meta id: %s, new slot: %d, now slot: %d, working: %d", request.MetaData.GetKey(), needNewSlot, len(s.instances), s.working)
@@ -310,7 +310,7 @@ func (s *Simple) gcLoop() {
 			if element := s.idleInstance.Back(); element != nil {
 				instance := element.Value.(*model.Instance)
 				idleDuration := time.Now().Sub(instance.LastIdleTime)
-				if idleDuration.Milliseconds() > int64(D)*int64(math.Log2(float64(instance.InitDurationInMs))+10)*s.config.IdleDurationBeforeGC.Milliseconds() {
+				if idleDuration.Milliseconds() > int64(D)*int64(math.Log2(float64(instance.InitDurationInMs)))*s.config.IdleDurationBeforeGC.Milliseconds() {
 					s.idleInstance.Remove(element)
 					delete(s.instances, instance.Id)
 					s.mu.Unlock()
