@@ -18,7 +18,6 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"math"
 	"sync"
 	"time"
 
@@ -97,15 +96,13 @@ func (s *Simple) expectSize() int {
 	}
 	Q := s.durationTimes.GetByRank(s.durationTimes.GetCount()/2, false).Score()
 	D := s.deltaTimes.GetByRank(s.deltaTimes.GetCount()/2, false).Score()
+	// log.Printf("expect, Q=%d, D=%d", Q, D)
 	if D == 0 {
 		return 2
 	}
 	result := Q/D + 1
 	if result > 10 {
 		result = 20
-	}
-	if result < 4 {
-		result = 2
 	}
 	return int(result)
 }
@@ -305,12 +302,25 @@ func (s *Simple) gcLoop() {
 	ticker := time.NewTicker(s.config.GcInterval)
 	for range ticker.C {
 		for {
-			D := s.expectSize()
 			s.mu.Lock()
 			if element := s.idleInstance.Back(); element != nil {
 				instance := element.Value.(*model.Instance)
 				idleDuration := time.Now().Sub(instance.LastIdleTime)
-				if idleDuration.Milliseconds() > int64(D)*int64(math.Log2(float64(instance.InitDurationInMs)))*s.config.IdleDurationBeforeGC.Milliseconds() {
+				Q := int64(2)
+				if s.durationTimes.GetCount() != 0 {
+					Q = int64(s.durationTimes.GetByRank(s.durationTimes.GetCount()/2, false).Score())
+				}
+				D := int64(2)
+				if s.deltaTimes.GetCount() != 0 {
+					D = int64(s.deltaTimes.GetByRank(s.deltaTimes.GetCount()/2, false).Score())
+				}
+				// bar := 20 * Q * int64(math.Log2(float64(D)))
+				bar := int64(1000 * 300)
+				if D > 1000 {
+					bar = 1000
+				}
+				log.Printf("bar=%d, Q=%d, D=%d, idle=%d", bar, Q, D, idleDuration.Milliseconds())
+				if idleDuration.Milliseconds() > bar {
 					s.idleInstance.Remove(element)
 					delete(s.instances, instance.Id)
 					s.mu.Unlock()
@@ -325,6 +335,9 @@ func (s *Simple) gcLoop() {
 
 					continue
 				}
+			}
+			if len(s.instances) == 0 {
+				s.skipDelta = true
 			}
 			s.mu.Unlock()
 			break
