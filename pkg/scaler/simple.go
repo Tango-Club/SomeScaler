@@ -305,7 +305,7 @@ func (s *Simple) gcLoop() {
 			s.mu.Lock()
 			if element := s.idleInstance.Back(); element != nil {
 				instance := element.Value.(*model.Instance)
-				idleDuration := time.Now().Sub(instance.LastIdleTime)
+				idleDuration := time.Now().Sub(instance.LastIdleTime).Milliseconds()
 				Q := int64(2)
 				if s.durationTimes.GetCount() != 0 {
 					Q = int64(s.durationTimes.GetByRank(s.durationTimes.GetCount()/2, false).Score())
@@ -314,19 +314,22 @@ func (s *Simple) gcLoop() {
 				if s.deltaTimes.GetCount() != 0 {
 					D = int64(s.deltaTimes.GetByRank(s.deltaTimes.GetCount()/2, false).Score())
 				}
+
+				LA := time.Now().Sub(s.lastAssignTime).Milliseconds()
+
 				// bar := 20 * Q * int64(math.Log2(float64(D)))
-				bar := int64(1000 * 300)
-				if D > 1000 {
-					bar = 1000
+				bar := int64(300000)
+				if D > 1000 || LA > 100000 {
+					bar = 100000
 				}
-				log.Printf("bar=%d, Q=%d, D=%d, idle=%d", bar, Q, D, idleDuration.Milliseconds())
-				if idleDuration.Milliseconds() > bar {
+				log.Printf("bar=%d, Q=%d, D=%d, LA=%d, idle=%d", bar, Q, D, LA, idleDuration)
+				if idleDuration > bar {
 					s.idleInstance.Remove(element)
 					delete(s.instances, instance.Id)
 					s.mu.Unlock()
 
 					go func() {
-						reason := fmt.Sprintf("Idle duration: %fs, excceed configured duration: %fs", idleDuration.Seconds(), s.config.IdleDurationBeforeGC.Seconds())
+						reason := fmt.Sprintf("Idle duration: %d, excceed configured duration: %fs", idleDuration, s.config.IdleDurationBeforeGC.Seconds())
 						ctx := context.Background()
 						ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 						defer cancel()
