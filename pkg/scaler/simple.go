@@ -319,7 +319,7 @@ func (s *Simple) gcLoop() {
 
 				// bar := 20 * Q * int64(math.Log2(float64(D)))
 				bar := int64(300000)
-				if LA > 100000 {
+				if LA > 200000 {
 					bar = 100000
 				}
 				//if D > 1000 {
