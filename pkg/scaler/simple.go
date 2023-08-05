@@ -319,9 +319,12 @@ func (s *Simple) gcLoop() {
 
 				// bar := 20 * Q * int64(math.Log2(float64(D)))
 				bar := int64(300000)
-				if D > 1000 || LA > 100000 {
+				if LA > 100000 {
 					bar = 100000
 				}
+				//if D > 1000 {
+				//	bar = 100
+				//}
 				log.Printf("bar=%d, Q=%d, D=%d, LA=%d, idle=%d", bar, Q, D, LA, idleDuration)
 				if idleDuration > bar {
 					s.idleInstance.Remove(element)
