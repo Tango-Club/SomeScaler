@@ -161,10 +161,7 @@ func Pow2Roundup(x int) int {
 }
 
 func (s *Simple) ExpandSlots(ctx context.Context, request *pb.AssignRequest) {
-	needNewSlot := s.expectSize() - len(s.instances)
-	if needNewSlot <= 0 {
-		needNewSlot = 2
-	}
+	needNewSlot := 1
 
 	log.Printf("expand slot, meta id: %s, new slot: %d, now slot: %d, working: %d", request.MetaData.GetKey(), needNewSlot, len(s.instances), s.working)
 
@@ -191,37 +188,14 @@ func (s *Simple) Assign(ctx context.Context, request *pb.AssignRequest) (*pb.Ass
 	s.mu.Unlock()
 
 	instance, err := s.TryGetIdleSlot()
-
 	if instance == nil {
-		constructDone := false
+		instance, err = s.ConstructSlot(ctx, request)
+	}
 
-		go func() {
-			s.ExpandSlots(ctx, request)
-			constructDone = true
-		}()
-		for {
-			instance, err = s.TryGetIdleSlot()
-			if err != nil {
-				errorMessage := fmt.Sprintf("TryGetIdleSlot instance failed with: %s", err.Error())
-				s.working -= 1
-				return nil, status.Errorf(codes.Internal, errorMessage)
-			}
-			if instance != nil {
-				break
-			}
-
-			if constructDone {
-				instance, err = s.TryGetIdleSlot()
-				if instance != nil {
-					break
-				}
-				errorMessage := fmt.Sprintf("ConstructAndPushSlotToQueue failed, request id: %s", request.RequestId)
-				s.working -= 1
-				return nil, status.Errorf(codes.Internal, errorMessage)
-			}
-
-			time.Sleep(s.config.WaitTimeInitial)
-		}
+	if instance == nil || err != nil {
+		errorMessage := fmt.Sprintf("ConstructAndPushSlotToQueue failed, request id: %s", request.RequestId)
+		s.working -= 1
+		return nil, status.Errorf(codes.Internal, errorMessage)
 	}
 
 	//add new instance
@@ -299,6 +273,8 @@ func (s *Simple) deleteSlot(ctx context.Context, requestId, slotId, instanceId, 
 }
 
 func (s *Simple) gcLoop() {
+	maxv := int64(300000)
+	minv := int64(200000)
 	ticker := time.NewTicker(s.config.GcInterval)
 	for range ticker.C {
 		for {
@@ -306,26 +282,41 @@ func (s *Simple) gcLoop() {
 			if element := s.idleInstance.Back(); element != nil {
 				instance := element.Value.(*model.Instance)
 				idleDuration := time.Now().Sub(instance.LastIdleTime).Milliseconds()
-				Q := int64(2)
+				Q := int64(1)
 				if s.durationTimes.GetCount() != 0 {
 					Q = int64(s.durationTimes.GetByRank(s.durationTimes.GetCount()/2, false).Score())
+					if Q <= 0 {
+						Q = 1
+					}
 				}
-				D := int64(2)
+				D := int64(1)
 				if s.deltaTimes.GetCount() != 0 {
 					D = int64(s.deltaTimes.GetByRank(s.deltaTimes.GetCount()/2, false).Score())
+					if D <= 0 {
+						D = 1
+					}
 				}
 
 				LA := time.Now().Sub(s.lastAssignTime).Milliseconds()
-
-				// bar := 20 * Q * int64(math.Log2(float64(D)))
-				bar := int64(300000)
-				if LA > 200000 {
-					bar = 100000
+				if LA > 1000 {
+					LA = 1000
 				}
-				//if D > 1000 {
-				//	bar = 100
-				//}
-				log.Printf("bar=%d, Q=%d, D=%d, LA=%d, idle=%d", bar, Q, D, LA, idleDuration)
+				if LA < 10 {
+					LA = 10
+				}
+
+				Dbar := int64(LA * D / Q)
+
+				if Dbar > maxv {
+					Dbar = maxv
+				}
+
+				if Dbar < minv {
+					Dbar = minv
+				}
+
+				bar := Dbar
+				log.Printf("bar=%d, Q=%d, D=%d, LA=%d, idle=%d, Dbar=%d", bar, Q, D, LA, idleDuration, Dbar)
 				if idleDuration > bar {
 					s.idleInstance.Remove(element)
 					delete(s.instances, instance.Id)
