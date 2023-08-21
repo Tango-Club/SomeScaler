@@ -18,6 +18,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"math"
 	"sync"
 	"time"
 
@@ -297,15 +298,9 @@ func (s *Simple) gcLoop() {
 					}
 				}
 
-				LA := time.Now().Sub(s.lastAssignTime).Milliseconds()
-				if LA > 1000 {
-					LA = 1000
-				}
-				if LA < 10 {
-					LA = 10
-				}
+				LA := int64(math.Log2(float64(time.Now().Sub(s.lastAssignTime).Milliseconds())))
 
-				Dbar := int64(LA * D / Q)
+				Dbar := int64(LA * 10 * D / Q)
 
 				if Dbar > maxv {
 					Dbar = maxv
