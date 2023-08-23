@@ -275,7 +275,7 @@ func (s *Simple) deleteSlot(ctx context.Context, requestId, slotId, instanceId, 
 
 func (s *Simple) gcLoop() {
 	maxv := int64(230000)
-	minv := int64(75000)
+	minv := int64(5000)
 	ticker := time.NewTicker(s.config.GcInterval)
 	for range ticker.C {
 		for {
@@ -298,9 +298,17 @@ func (s *Simple) gcLoop() {
 					}
 				}
 
-				LA := int64(math.Log2(float64(time.Now().Sub(s.lastAssignTime).Milliseconds())))
+				LA := int64(math.Log(float64(time.Now().Sub(s.lastAssignTime).Milliseconds())))
+				if LA <= 0 {
+					LA = 1
+				}
 
-				Dbar := int64(LA * 10 * D / Q)
+				LQ := int64(math.Log(float64(Q)))
+				if LQ <= 0 {
+					LQ = 1
+				}
+
+				Dbar := int64(2 * LQ * D / LA)
 
 				if Dbar > maxv {
 					Dbar = maxv
