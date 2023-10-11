@@ -12,7 +12,7 @@ github.com/google/uuid
 # github.com/wangjia184/sortedset v0.0.0-20220209072355-af6d6d227aa7
 ## explicit; go 1.17
 github.com/wangjia184/sortedset
-# golang.org/x/net v0.8.0
+# golang.org/x/net v0.17.0
 ## explicit; go 1.17
 golang.org/x/net/http/httpguts
 golang.org/x/net/http2
@@ -20,10 +20,10 @@ golang.org/x/net/http2/hpack
 golang.org/x/net/idna
 golang.org/x/net/internal/timeseries
 golang.org/x/net/trace
-# golang.org/x/sys v0.6.0
+# golang.org/x/sys v0.13.0
 ## explicit; go 1.17
 golang.org/x/sys/unix
-# golang.org/x/text v0.8.0
+# golang.org/x/text v0.13.0
 ## explicit; go 1.17
 golang.org/x/text/secure/bidirule
 golang.org/x/text/transform
